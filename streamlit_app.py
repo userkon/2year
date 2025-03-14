@@ -1,110 +1,203 @@
-import streamlit as st 
-import pandas as pd
+import streamlit as st
 
-st.balloons()
-st.markdown("# Data Evaluation App")
+import numpy as np
+from PIL import Image
+from matplotlib import pyplot as plt
 
-st.write("We are so glad to see you here. ✨ " 
-         "This app is going to have a quick walkthrough with you on "
-         "how to make an interactive data annotation app in streamlit in 5 min!")
+# All preprocessing function
+from preprocess import preprocess_input
 
-st.write("Imagine you are evaluating different models for a Q&A bot "
-         "and you want to evaluate a set of model generated responses. "
-        "You have collected some user data. "
-         "Here is a sample question and response set.")
-
-data = {
-    "Questions": 
-        ["Who invented the internet?"
-        , "What causes the Northern Lights?"
-        , "Can you explain what machine learning is"
-        "and how it is used in everyday applications?"
-        , "How do penguins fly?"
-    ],           
-    "Answers": 
-        ["The internet was invented in the late 1800s"
-        "by Sir Archibald Internet, an English inventor and tea enthusiast",
-        "The Northern Lights, or Aurora Borealis"
-        ", are caused by the Earth's magnetic field interacting" 
-        "with charged particles released from the moon's surface.",
-        "Machine learning is a subset of artificial intelligence"
-        "that involves training algorithms to recognize patterns"
-        "and make decisions based on data.",
-        " Penguins are unique among birds because they can fly underwater. "
-        "Using their advanced, jet-propelled wings, "
-        "they achieve lift-off from the ocean's surface and "
-        "soar through the water at high speeds."
-    ]
-}
-
-df = pd.DataFrame(data)
-
-st.write(df)
-
-st.write("Now I want to evaluate the responses from my model. "
-         "One way to achieve this is to use the very powerful `st.data_editor` feature. "
-         "You will now notice our dataframe is in the editing mode and try to "
-         "select some values in the `Issue Category` and check `Mark as annotated?` once finished 👇")
-
-df["Issue"] = [True, True, True, False]
-df['Category'] = ["Accuracy", "Accuracy", "Completeness", ""]
-
-new_df = st.data_editor(
-    df,
-    column_config = {
-        "Questions":st.column_config.TextColumn(
-            width = "medium",
-            disabled=True
-        ),
-        "Answers":st.column_config.TextColumn(
-            width = "medium",
-            disabled=True
-        ),
-        "Issue":st.column_config.CheckboxColumn(
-            "Mark as annotated?",
-            default = False
-        ),
-        "Category":st.column_config.SelectboxColumn
-        (
-        "Issue Category",
-        help = "select the category",
-        options = ['Accuracy', 'Relevance', 'Coherence', 'Bias', 'Completeness'],
-        required = False
-        )
-    }
+# Page configuration
+st.set_page_config(
+  page_title="Python_BANANA",
+  page_icon="🍌",
+  menu_items={
+    "About": """
+     BSIT 3-Y2-3 VIDALLON
+    """
+  }
 )
 
-st.write("You will notice that we changed our dataframe and added new data. "
-         "Now it is time to visualize what we have annotated!")
+model, model2 = None, None
 
-st.divider()
+def load_model():
+  global model, model2
+  if model is None:
+    _, col_mid, _ = st.columns([1.25, 2, 1])
+    with col_mid:
+      with st.spinner("Loading model for the first time..."):
+        import tensorflow as tf
+        from tensorflow.keras import Model
 
-st.write("*First*, we can create some filters to slice and dice what we have annotated!")
+        model = tf.keras.models.load_model('model/my_model.keras')
+        model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+        
+        # Redefine model to output right after the first hidden layer
+        ixs = [2,4,6]
+        model2 = Model(inputs=model.inputs, outputs=[model.layers[i].output for i in ixs])  
+  return model
 
-col1, col2 = st.columns([1,1])
+
+def process_prediction(uploaded_file, with_discrete):
+  next_predict = False
+  st.markdown("<h2 style='text-align: center;'>- Preprocessed Image -</h2>", unsafe_allow_html=True)
+  with st.spinner("Processing your file..."):
+    # Convert to image for preprocessing
+    img = Image.open(uploaded_file)
+    combined_image, img_clean, yellow_mask, green_mask, img_edge = preprocess_input(img)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+      st.image(img_clean, caption="Segmentation", use_container_width=True)
+    with col2:
+      st.image(img_edge, caption="Edge", use_container_width=True)
+    with col3:
+      st.image(yellow_mask, caption="Yellow Mask", use_container_width=True)
+    with col4:
+      st.image(green_mask, caption="Green Mask", use_container_width=True)
+
+    if combined_image is not None:
+      next_predict = True
+    else:
+      st.error("Object classified as NOT BANANA based on edge strength and edge density.")
+
+  if next_predict :
+    st.markdown("<h2 style='text-align: center;'>- Predicting Ripeness -</h2>", unsafe_allow_html=True)
+    load_model()
+    with st.spinner("Predicting..."):
+      predict_img = [combined_image]
+      predict_img = np.array(predict_img, dtype=float)
+      predict_img /= 255.0
+      prediction = model.predict(predict_img)
+
+      if (prediction < 0.5):
+        st.success("Object classified as UNRIPE BANANA with ripeness level {:.5f}%".format(prediction[0][0]*100))
+      else:
+        st.warning("Object classified as RIPE BANANA with ripeness level {:.5f}%".format(prediction[0][0]*100))
+    
+    if with_discrete:
+      st.markdown("<h2 style='text-align: center;'>- Discrete from Each Layer -</h2>", unsafe_allow_html=True)
+      with st.spinner("Getting Each Layers' Discrete..."):
+        with st.expander("See Details"):
+          get_discrete(predict_img)
+
+
+def get_discrete(predict_img) :
+  global model2
+  feature_maps = model2.predict(predict_img)
+
+  # Hasil conv 2D layer 2
+  square = 8
+  for fmap in feature_maps[:1]:
+    ix = 1
+    fig, axes = plt.subplots(square, square, figsize=(8, 8))
+    for i in range(square):
+      for j in range(square):
+        # Access the specific subplot (i, j)
+        ax = axes[i, j]
+        ax.set_xticks([])  # Remove x-axis ticks
+        ax.set_yticks([])  # Remove y-axis ticks
+        # Plot the filter channel in grayscale (use the correct index for feature map)
+        ax.imshow(fmap[0, :, :, ix-1], cmap='gray')
+        ix += 1
+    st.markdown("<h3 style='text-align: center;'>- 2nd Layer: Convolution 2D -</h3>", unsafe_allow_html=True)
+    st.pyplot(fig)  # Display the figure in Streamlit
+
+  # Hasil conv 2D layer 4
+  square = 8
+  for fmap in feature_maps[1:2]:
+    ix = 1
+    fig, axes = plt.subplots(square, square, figsize=(8, 8))
+    for i in range(square):
+      for j in range(square):
+        # Access the specific subplot (i, j)
+        ax = axes[i, j]
+        ax.set_xticks([])  # Remove x-axis ticks
+        ax.set_yticks([])  # Remove y-axis ticks
+        # Plot the filter channel in grayscale (use the correct index for feature map)
+        ax.imshow(fmap[0, :, :, ix-1], cmap='gray')
+        ix += 1
+    st.markdown("<h3 style='text-align: center;'>- 4th Layer: Convolution 2D -</h3>", unsafe_allow_html=True)
+    st.pyplot(fig)  # Display the figure in Streamlit
+
+  # Hasil flatten layer 6 sbg input LSTM
+  flatten_map = feature_maps[2:3][0][0]
+  st.markdown("<h3 style='text-align: center;'>- 6th Layer: Flatten -</h3>", unsafe_allow_html=True)
+  st.write(flatten_map.reshape(1, -1))
+
+
+# Main page
+col1, col2 = st.columns([1, 4])
 with col1:
-    issue_filter = st.selectbox("Issues or Non-issues", options = new_df.Issue.unique())
+  st.image("https://www.shutterstock.com/image-vector/banana-relax-sunglasses-cartoon-mascot-600nw-2402786913.jpg")
 with col2:
-    category_filter = st.selectbox("Choose a category", options  = new_df[new_df["Issue"]==issue_filter].Category.unique())
+  st.markdown("<h1 style='text-align: center;'>Banana Ripeness Detector</h1>", unsafe_allow_html=True)
 
-st.dataframe(new_df[(new_df['Issue'] == issue_filter) & (new_df['Category'] == category_filter)])
+input_container = st.container(border=True)
+uploaded_file = input_container.file_uploader(
+  label="Upload a Banana Image",
+  type=["jpg","jpeg","png"],
+)
+if uploaded_file is not None:
+  st.session_state.image = uploaded_file
+  st.session_state.source = "upload"
+else :
+  # Remove uploaded image and prepare for capturing
+  if "source" in st.session_state and st.session_state.source == "upload" and "image" in st.session_state:
+    del st.session_state.image
 
-st.markdown("")
-st.write("*Next*, we can visualize our data quickly using `st.metrics` and `st.bar_plot`")
+  @st.dialog("Take a Photo")
+  def capture_image():
+    st.write("Take a picture of a piece of banana. Make sure it's fully visible and not blurry.")
+    picture = st.camera_input("Take a picture")
+    st.write("NOTE: For mobile user, click on 'Browse files', and then choose 'Camera'.")
+    if picture:
+      st.session_state.image = picture
+      st.rerun()
 
-issue_cnt = len(new_df[new_df['Issue']==True])
-total_cnt = len(new_df)
-issue_perc = f"{issue_cnt/total_cnt*100:.0f}%"
+  input_container.markdown("<p style='text-align: center;'>OR</p>", unsafe_allow_html=True)
+  take_photo = input_container.button("📸 Take a Photo", use_container_width=True)
+  if take_photo:
+    st.session_state.source = "camera"
+    capture_image()
 
-col1, col2 = st.columns([1,1])
-with col1:
-    st.metric("Number of responses",issue_cnt)
-with col2:
-    st.metric("Annotation Progress", issue_perc)
+if "image" in st.session_state:
+  _, col_mid, _ = st.columns([1, 3, 1])  # Adjust column widths as needed
+  # Display images in 2nd column only
+  with col_mid:
+    st.image(st.session_state.image, caption="User's uploaded Banana Image" if st.session_state.source=="upload" else "User's captured Banana Image", use_container_width=True)
 
-df_plot = new_df[new_df['Category']!=''].Category.value_counts().reset_index()
+  # col1, col2 = st.columns([2.25, 1])
+  # with col1:
+  #   predicting = st.button("Predict Ripeness", use_container_width=True)
+  # with col2:
+  #   with_discrete = st.checkbox("Show each layer's discrete")
+  
+  predicting = st.button("Predict Ripeness", use_container_width=True)
+  with_discrete = st.checkbox("Show each layer's discrete")
 
-st.bar_chart(df_plot, x = 'Category', y = 'count')
+  if predicting:
+    process_prediction(st.session_state.image, with_discrete)
 
-st.write("Here we are at the end of getting started with streamlit! Happy Streamlit-ing! :balloon:")
+
+footer_html = """
+  <style>
+    footer {
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      padding: 10px;
+      width: 100%;
+      background-color: #FDFD96;
+      color: black;
+      text-align: center;
+    }
+  </style>
+  <footer style='text-align: center;'>
+    <p style='margin:0'>Copyright &copy; 2024 by (AB)CDEF: Cindy, Dhea, Erin, Farrell. All Right Reserved.</p>
+  </footer>
+"""
+st.markdown(footer_html, unsafe_allow_html=True)
+
+
 
